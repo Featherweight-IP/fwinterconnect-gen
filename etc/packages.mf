@@ -1,0 +1,7 @@
+#****************************************************************************
+#* packages.mf for fwinterconnect-gen
+#****************************************************************************
+
+simscripts@http://github.com/mballance/simscripts.git
+
+googletest-hdl@http://github.com/mballance/googletest-hdl.git

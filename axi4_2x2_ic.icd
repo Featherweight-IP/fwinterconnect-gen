@@ -1,0 +1,24 @@
+#****************************************************************************
+#* axi4_2x2_ic.icd
+#*
+#* Specification for a 2x2 AXI4 interconnect
+#****************************************************************************
+{
+  "interconnect": { "name": "main_ic", "protocol": "axi4", "data-width": "32", "addr-width": "32",
+    "addrmap": [
+      {"port": "t[0]", "base": "0x00000000", "limit": "0x00001FFF"}
+    ]
+  },
+  "bridge": { "name": "main2reg", 
+    "target": {
+      "protocol": "axi4", "data-width": "32", "addr-width": "32"
+    },
+    "initiator": {
+      "protocol": "wb", "data-width": "64", "addr-width": "32"
+    }
+  },
+  "portmap": [
+    {"export": "main_ic.t[0]"},
+    {"bind": [ "main_ic.i[0]", "wb_ic.t[0]" ] }
+  ]
+}
