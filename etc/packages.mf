@@ -3,5 +3,5 @@
 #****************************************************************************
 
 simscripts@http://github.com/mballance/simscripts.git
-
 googletest-hdl@http://github.com/mballance/googletest-hdl.git
+fwprotocol_defs@ssh://github.com:featherweight-ip/fwprotocol_defs.git

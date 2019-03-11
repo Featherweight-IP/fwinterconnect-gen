@@ -1,0 +1,658 @@
+module interconnect;
+	
+// Read request state machine
+reg[3:0]                                    ${name}_read_req_state[${n-targets}-1:0];
+reg[N_SLAVEID_BITS:0]                        ${name}_read_selected_slave[${n-targets}-1:0];
+wire[${n-targets}-1:0]                            ${name}_ar_req[${n-initiators}:0];
+wire                                        ${name}_ar_master_gnt[${n-initiators}:0];
+wire[$clog2(${n-targets})-1:0]                    ${name}_ar_master_gnt_id[${n-initiators}:0];
+    
+// Write request state machine
+generate
+	genvar ${name}_m_aw_i;
+	for (${name}_m_aw_i=0; ${name}_m_aw_i<${n-targets}; ${name}_m_aw_i++) begin : ${name}_m_aw
+			always @(posedge clk) begin
+			if (rstn == 0) begin
+			${name}_write_req_state[${name}_m_aw_i] <= 'b00;
+		${name}_write_selected_slave[${name}_m_aw_i] <= NO_SLAVE;
+		${name}_write_request_busy[${name}_m_aw_i] <= 0;
+		${name}_R_AWADDR_i[${name}_m_aw_i] <= 0;
+		${name}_R_AWADDR[${name}_m_aw_i] <= 0;
+		${name}_R_AWBURST[${name}_m_aw_i] <= 0;
+		${name}_R_AWLOCK[${name}_m_aw_i] <= 0;
+		${name}_R_AWCACHE[${name}_m_aw_i] <= 0;
+		${name}_R_AWID[${name}_m_aw_i] <= 0;
+		${name}_R_AWLEN[${name}_m_aw_i] <= 0;
+		${name}_R_AWPROT[${name}_m_aw_i] <= 0;
+		${name}_R_AWQOS[${name}_m_aw_i] <= 0;
+		${name}_R_AWREGION[${name}_m_aw_i] <= 0;
+		${name}_R_AWSIZE[${name}_m_aw_i] <= 0;
+		${name}_R_AWVALID[${name}_m_aw_i] <= 0;
+	end else begin
+	case (${name}_write_req_state[${name}_m_aw_i])
+	// Wait receipt of a request for an available target
+	'b00: begin
+		if (${name}_AWREADY[m_aw_i] && ${name}_AWVALID[${name}_m_aw_i] && !write_request_busy[${name}_m_aw_i]) begin
+			${name}_R_AWADDR_i[m_aw_i] <= AWADDR[${name}_m_aw_i];
+			// Save the master ID that this request came from
+			${name}_R_AWID[${name}_m_aw_i][(N_MASTERID_BITS+AXI4_ID_WIDTH)-1:AXI4_ID_WIDTH] <= ${name}_m_aw_i;
+			${name}_R_AWID[${name}_m_aw_i][AXI4_ID_WIDTH-1:0] <= ${name}_AWID[${name}_m_aw_i];
+			${name}_R_AWLEN[${name}_m_aw_i] <= ${name}_AWLEN[${name}_m_aw_i];
+			${name}_R_AWSIZE[${name}_m_aw_i] <= ${name}_AWSIZE[${name}_m_aw_i];
+			${name}_R_AWBURST[${name}_m_aw_i] <= ${name}_AWBURST[${name}_m_aw_i];
+			${name}_R_AWLOCK[${name}_m_aw_i] <= ${name}_AWLOCK[${name}_m_aw_i];
+			${name}_R_AWCACHE[${name}_m_aw_i] <= ${name}_AWCACHE[${name}_m_aw_i];
+			${name}_R_AWPROT[${name}_m_aw_i] <= ${name}_AWPROT[${name}_m_aw_i];
+			${name}_R_AWQOS[${name}_m_aw_i] <= ${name}_AWQOS[${name}_m_aw_i];
+			${name}_R_AWREGION[${name}_m_aw_i] <= ${name}_AWREGION[${name}_m_aw_i];
+			${name}_write_request_busy[${name}_m_aw_i] <= 1'b1;
+			${name}_write_req_state[${name}_m_aw_i] <= 'b01;
+		end
+	end
+                
+	// Decode state
+	'b01: begin
+		write_selected_slave[${name}_m_aw_i] <= ${name}_addr2initiator(${name}_m_aw_i, R_AWADDR_i[${name}_m_aw_i], R_AWADDR[${name}_m_aw_i]);
+		// Initiate the transfer when the
+		R_AWVALID[${name}_m_aw_i] <= 1;
+		write_req_state[${name}_m_aw_i] <= 'b10;
+	end
+
+	// Wait for the targeted slave to become available
+	'b10: begin
+	if (aw_master_gnt[write_selected_slave[${name}_m_aw_i]] &&
+		aw_master_gnt_id[write_selected_slave[${name}_m_aw_i]] == ${name}_m_aw_i &&
+		SAWREADY[write_selected_slave[${name}_m_aw_i]]) begin
+	// Wait until the slave is granted and accepts the request
+	R_AWVALID[${name}_m_aw_i] <= 0;
+	write_req_state[${name}_m_aw_i] <= 'b11;
+	end
+	end
+            
+	// Wait for write data
+	// TODO: could pipeline this with address phase, provided masters stay in order
+	'b11: begin
+	if (WVALID[${name}_m_aw_i] == 1'b1 && WREADY[${name}_m_aw_i] == 1'b1) begin
+	if (WLAST[${name}_m_aw_i] == 1'b1) begin
+	// We're done
+	write_request_busy[${name}_m_aw_i] <= 1'b0;
+	write_selected_slave[${name}_m_aw_i] <= NO_SLAVE;
+	write_req_state[${name}_m_aw_i] <= 'b00;
+	end
+	end
+	end
+	endcase
+	end
+	end
+	end
+	endgenerate
+
+// Build the aw_req vector for each slave
+	generate
+		genvar aw_req_i, aw_req_j;
+
+		for (aw_req_i=0; aw_req_i < ${n-initiators}+1; aw_req_i++) begin : aw_req_slave
+			for (aw_req_j=0; aw_req_j < ${n-targets}; aw_req_j++) begin : aw_req_master
+				assign aw_req[aw_req_i][aw_req_j] = (write_selected_slave[aw_req_j] == aw_req_i);
+			end
+		end
+	endgenerate
+    
+module ${name}_arbiter #(
+		parameter int            N_REQ=2
+		) (
+		input                        clk,
+		input                        rstn,
+		input[N_REQ-1:0]            req,
+		output                        gnt,
+		output[$clog2(N_REQ)-1:0]    gnt_id
+		);
+    
+	reg state;
+    
+	reg [N_REQ-1:0]    gnt_o;
+	reg [N_REQ-1:0]    last_gnt;
+	reg [$clog2(N_REQ)-1:0] gnt_id_o;
+	assign gnt = |gnt_o;
+	assign gnt_id = gnt_id_o;
+    
+	wire[N_REQ-1:0] gnt_ppc;
+	wire[N_REQ-1:0]    gnt_ppc_next;
+
+	generate
+		if (N_REQ > 1) begin
+			assign gnt_ppc_next = {gnt_ppc[N_REQ-2:0], 1'b0};
+		end else begin
+			assign gnt_ppc_next = gnt_ppc;
+		end
+	endgenerate
+
+	generate
+		genvar gnt_ppc_i;
+        
+		for (gnt_ppc_i=N_REQ-1; gnt_ppc_i>=0; gnt_ppc_i--) begin : gnt_ppc_genblk
+			if (gnt_ppc_i == 0) begin
+				assign gnt_ppc[gnt_ppc_i] = last_gnt[0];
+			end else begin
+				assign gnt_ppc[gnt_ppc_i] = |last_gnt[gnt_ppc_i-1:0];
+			end
+		end
+	endgenerate
+    
+	wire[N_REQ-1:0]        unmasked_gnt;
+	generate
+		genvar unmasked_gnt_i;
+        
+		for (unmasked_gnt_i=0; unmasked_gnt_i<N_REQ; unmasked_gnt_i++) begin : unmasked_gnt_genblk
+			// Prioritized unmasked grant vector. Grant to the lowest active grant
+			if (unmasked_gnt_i == 0) begin
+				assign unmasked_gnt[unmasked_gnt_i] = req[unmasked_gnt_i];
+			end else begin
+				assign unmasked_gnt[unmasked_gnt_i] = (req[unmasked_gnt_i] & ~(|req[unmasked_gnt_i-1:0]));
+			end
+		end
+	endgenerate
+    
+	wire[N_REQ-1:0]        masked_gnt;
+	generate
+		genvar masked_gnt_i;
+        
+		for (masked_gnt_i=0; masked_gnt_i<N_REQ; masked_gnt_i++) begin : masked_gnt_genblk
+			if (masked_gnt_i == 0) begin
+				assign masked_gnt[masked_gnt_i] = (gnt_ppc_next[masked_gnt_i] & req[masked_gnt_i]);
+			end else begin
+				// Select first request above the last grant
+				assign masked_gnt[masked_gnt_i] = (gnt_ppc_next[masked_gnt_i] & req[masked_gnt_i] & 
+						~(|(gnt_ppc_next[masked_gnt_i-1:0] & req[masked_gnt_i-1:0])));
+			end
+		end
+	endgenerate
+    
+	wire[N_REQ-1:0] prioritized_gnt;
+
+	// Give priority to the 'next' request
+	assign prioritized_gnt = (|masked_gnt)?masked_gnt:unmasked_gnt;
+    
+	always @(posedge clk) begin
+		if (rstn == 0) begin
+			state <= 0;
+			last_gnt <= 0;
+			gnt_o <= 0;
+			gnt_id_o <= 0;
+		end else begin
+			case (state) 
+				0: begin
+					if (|prioritized_gnt) begin
+						state <= 1;
+						gnt_o <= prioritized_gnt;
+						last_gnt <= prioritized_gnt;
+						gnt_id_o <= gnt2id(prioritized_gnt);
+					end
+				end
+                
+				1: begin
+					if ((gnt_o & req) == 0) begin
+						state <= 0;
+						gnt_o <= 0;
+					end
+				end
+			endcase
+		end
+	end
+
+	function reg[$clog2(N_REQ)-1:0] gnt2id(reg[N_REQ-1:0] gnt);
+		automatic int i;
+		//        static reg[$clog2(N_REQ)-1:0] result;
+		reg[$clog2(N_REQ)-1:0] result;
+        
+		result = 0;
+        
+		for (i=0; i<N_REQ; i++) begin
+			if (gnt[i]) begin
+				result |= i;
+			end
+		end
+    
+		return result;
+	endfunction
+endmodule    
+    
+
+    generate
+		genvar ${name}_aw_arb_i;
+        
+		for (${name}_aw_arb_i=0; ${name}_aw_arb_i<(${n-initiators}+1); ${name}_aw_arb_i++) begin : ${name}_aw_arb
+			arbiter #(.N_REQ(${n-targets})) ${name}_aw_arb (
+				.clk    (clk   ), 
+				.rstn   (rstn  ), 
+				.req    (${name}_aw_req[${name}_aw_arb_i]), 
+				.gnt    (${name}_aw_master_gnt[${name}_aw_arb_i]),
+				.gnt_id (${name}_aw_master_gnt_id[${name}_aw_arb_i])
+			);
+		end
+	endgenerate
+
+	wire[N_MASTERID_BITS:0]                    ${name}_slave_active_master[${n-initiators}:0];
+
+	generate
+		genvar ${name}_s_am_i;
+        
+		for (${name}_s_am_i=0; ${name}_s_am_i<${n_initiators}+1; ${name}_s_am_i++) begin : ${name}_s_am
+			assign ${name}_slave_active_master[${name}_s_am_i] =
+			(${name}_aw_master_gnt[${name}_s_am_i])?${name}_aw_master_gnt_id[${name}_s_am_i]:NO_MASTER;
+		end
+	endgenerate
+    
+	generate
+		genvar ${name}_m_w_i;
+        
+		for (${name}_m_w_i=0; ${name}_m_w_i<${n-targets}; ${name}_m_w_i++) begin : ${name}_m_w
+			assign ${name}_WREADY[${name}_m_w_i] = (${name}_write_selected_slave[${name}_m_w_i] != NO_SLAVE && 
+				${name}_aw_master_gnt[${name}_write_selected_slave[${name}_m_w_i]] && 
+				${name}_aw_master_gnt_id[${name}_write_selected_slave[${name}_m_w_i]] == ${name}_m_w_i)?
+				${name}_SWREADY[${name}_write_selected_slave[${name}_m_w_i]]:0;
+			assign ${name}_AWREADY[${name}_m_w_i] = (
+					${name}_write_req_state[${name}_m_w_i] == 0 && ${name}_write_request_busy[${name}_m_w_i] == 0);
+		end
+	endgenerate
+    
+	generate
+		genvar ${name}_s_w_i;
+			for(${name}_s_w_i=0; ${name}_s_w_i<(${n-initiators}+1); ${name}_s_w_i++) begin : ${name}_s_w
+				assign ${name}_SWDATA[${name}_s_w_i] = (${name}_slave_active_master[${name}_s_w_i] == NO_MASTER)?
+					0:
+					${name}_WDATA[${name}_slave_active_master[${name}_s_w_i]];
+				assign ${name}_SWSTRB[${name}_s_w_i] = (${name}_slave_active_master[${name}_s_w_i] == NO_MASTER)?
+					0:
+					${name}_WSTRB[${name}_slave_active_master[${name}_s_w_i]];
+				assign ${name}_SWLAST[${name}_s_w_i] = (${name}_slave_active_master[${name}_s_w_i] == NO_MASTER)?
+					0:
+					${name}_WLAST[${name}_slave_active_master[${name}_s_w_i]];
+				assign ${name}_SWVALID[${name}_s_w_i] = (${name}_slave_active_master[${name}_s_w_i] == NO_MASTER)?
+					0:
+					${name}_WVALID[${name}_slave_active_master[${name}_s_w_i]];
+			end
+	endgenerate
+
+	generate
+		genvar ${name}_s_aw_i;
+		for(${name}_s_aw_i=0; ${name}_s_aw_i<(${n-initiators}+1); ${name}_s_aw_i++) begin : ${name}_SAW_assign
+			assign ${name}_SAWADDR[${name}_s_aw_i] = (${name}_slave_active_master[${name}_s_aw_i] == NO_MASTER)?
+				0:${name}_R_AWADDR[${name}_slave_active_master[${name}_s_aw_i]];
+			assign ${name}_SAWID[${name}_s_aw_i] = (${name}_slave_active_master[${name}_s_aw_i] == NO_MASTER)?0:${name}_R_AWID[${name}_slave_active_master[${name}_s_aw_i]];
+			assign ${name}_SAWLEN[${name}_s_aw_i] = (slave_active_master[s_aw_i] == NO_MASTER)?0:R_AWLEN[slave_active_master[s_aw_i]];
+			assign ${name}_SAWSIZE[${name}_s_aw_i] = (slave_active_master[s_aw_i] == NO_MASTER)?0:R_AWSIZE[slave_active_master[s_aw_i]];
+			assign ${name}_SAWBURST[${name}_s_aw_i] = (slave_active_master[s_aw_i] == NO_MASTER)?0:R_AWBURST[slave_active_master[s_aw_i]];
+			assign ${name}_SAWLOCK[${name}_s_aw_i] = (slave_active_master[s_aw_i] == NO_MASTER)?0:R_AWLOCK[slave_active_master[s_aw_i]];
+			assign ${name}_SAWCACHE[${name}_s_aw_i] = (slave_active_master[s_aw_i] == NO_MASTER)?0:R_AWCACHE[slave_active_master[s_aw_i]];
+			assign ${name}_SAWPROT[${name}_s_aw_i] = (slave_active_master[s_aw_i] == NO_MASTER)?0:R_AWPROT[slave_active_master[s_aw_i]];
+			assign ${name}_SAWQOS[${name}_s_aw_i] = (slave_active_master[s_aw_i] == NO_MASTER)?0:R_AWQOS[slave_active_master[s_aw_i]];
+			assign ${name}_SAWREGION[${name}_s_aw_i] = (slave_active_master[s_aw_i] == NO_MASTER)?0:R_AWREGION[slave_active_master[s_aw_i]];
+			assign ${name}_SAWVALID[${name}_s_aw_i] = (slave_active_master[s_aw_i] == NO_MASTER)?0:R_AWVALID[slave_active_master[s_aw_i]];
+		end
+	endgenerate
+
+// Write response channel
+reg [N_MASTERID_BITS:0]        write_response_selected_master[${n-initiators}:0];
+wire [${n-initiators}:0]            b_req[${n-targets}-1:0];
+wire                        b_gnt[${n-targets}-1:0];
+wire [N_SLAVEID_BITS-1:0]    b_gnt_id[${n-targets}-1:0];
+    
+generate
+genvar b_arb_i;
+        
+for (b_arb_i=0; b_arb_i<${n-targets}; b_arb_i++) begin : b_arb
+arbiter #(.N_REQ  (${n-initiators}+1)) b_arb (
+.clk    (clk   ), 
+.rstn   (rstn  ), 
+.req    (b_req[b_arb_i]), 
+.gnt    (b_gnt[b_arb_i]),
+.gnt_id    (b_gnt_id[b_arb_i])
+);
+end
+endgenerate
+        
+generate
+genvar b_req_slave_i, b_req_master_i;
+
+for (b_req_slave_i=0; b_req_slave_i<${n-initiators}+1; b_req_slave_i++) begin : b_req_slave
+for (b_req_master_i=0; b_req_master_i<${n-targets}; b_req_master_i++) begin : b_req_master
+assign b_req[b_req_master_i][b_req_slave_i] = (write_response_selected_master[b_req_slave_i] == b_req_master_i);
+end
+end
+endgenerate
+        
+// Write response state machine
+reg[1:0]                write_response_state[${n-initiators}:0];
+    
+generate
+genvar b_state_i;
+        
+for (b_state_i=0; b_state_i<${n-initiators}+1; b_state_i++) begin : b_state
+always @(posedge clk) begin
+if (rstn == 0) begin
+write_response_state[b_state_i] <= 0;
+write_response_selected_master[b_state_i] <= NO_MASTER;
+R_SBVALID[b_state_i] <= 0;
+end else begin
+case (write_response_state[b_state_i])
+0: begin
+if (SBREADY[b_state_i] && SBVALID[b_state_i]) begin
+R_SBID[b_state_i] <= SBID[b_state_i];
+R_SBRESP[b_state_i] <= SBRESP[b_state_i];
+                                
+// Issue request for targeted master
+write_response_selected_master[b_state_i] <= SBID[b_state_i][(AXI4_ID_WIDTH+N_MASTERID_BITS-1):AXI4_ID_WIDTH];
+write_response_state[b_state_i] <= 1;
+R_SBVALID[b_state_i] <= 1;
+end
+end
+                        
+1: begin
+if (b_gnt[write_response_selected_master[b_state_i]] &&
+b_gnt_id[write_response_selected_master[b_state_i]] == b_state_i &&
+BREADY[write_response_selected_master[b_state_i]]) begin
+R_SBVALID[b_state_i] <= 0;
+write_response_selected_master[b_state_i] <= NO_MASTER;
+write_response_state[b_state_i] <= 0;
+end
+end
+endcase
+end
+end
+end
+endgenerate
+        
+generate
+genvar b_assign_i;
+    
+for (b_assign_i=0; b_assign_i<${n-initiators}+1; b_assign_i++) begin : b_assign
+assign SBREADY[b_assign_i] = (write_response_state[b_assign_i] == 0);
+end
+endgenerate
+        
+wire[N_SLAVEID_BITS:0]                        b_slave_master_id[${n-targets}-1:0];
+
+// Determine which slave should be driven the write response channel for each master
+// based on the slave->master grant
+generate
+genvar b_slave_master_i;
+        
+for (b_slave_master_i=0; b_slave_master_i<${n-targets}; b_slave_master_i++) begin : b_slave_master
+assign b_slave_master_id[b_slave_master_i] = 
+(b_gnt[b_slave_master_i])?b_gnt_id[b_slave_master_i]:NO_SLAVE;
+end
+endgenerate
+        
+generate
+genvar b_master_assign_i;
+    
+for (b_master_assign_i=0; b_master_assign_i<${n-targets}; b_master_assign_i++) begin : b_master_assign
+assign BID[b_master_assign_i] = (b_slave_master_id[b_master_assign_i] == NO_SLAVE)?0:R_SBID[b_slave_master_id[b_master_assign_i]];
+assign BVALID[b_master_assign_i] = (b_slave_master_id[b_master_assign_i] == NO_SLAVE)?0:R_SBVALID[b_slave_master_id[b_master_assign_i]];
+assign BRESP[b_master_assign_i] = (b_slave_master_id[b_master_assign_i] == NO_SLAVE)?0:R_SBRESP[b_slave_master_id[b_master_assign_i]];
+end
+endgenerate
+
+        
+
+    
+generate
+genvar m_ar_i;
+for (m_ar_i=0; m_ar_i<${n-targets}; m_ar_i++) begin : m_ar
+assign ARREADY[m_ar_i] = (rstn == 1 && read_req_state[m_ar_i] == 0);
+always @(posedge clk) begin
+if (rstn == 0) begin
+read_req_state[m_ar_i] <= 'b00;
+read_selected_slave[m_ar_i] <= NO_SLAVE;
+R_ARADDR_i[m_ar_i] <= 0;
+R_ARADDR[m_ar_i] <= 0;
+R_ARBURST[m_ar_i] <= 0;
+R_ARLOCK[m_ar_i] <= 0;
+R_ARCACHE[m_ar_i] <= 0;
+R_ARID[m_ar_i] <= 0;
+R_ARLEN[m_ar_i] <= 0;
+R_ARPROT[m_ar_i] <= 0;
+R_ARQOS[m_ar_i] <= 0;
+R_ARREGION[m_ar_i] <= 0;
+R_ARSIZE[m_ar_i] <= 0;
+R_ARVALID[m_ar_i] <= 0;
+end else begin
+case (read_req_state[m_ar_i])
+// Wait receipt of a request for an available target
+'b00: begin
+if (ARREADY[m_ar_i] && ARVALID[m_ar_i]) begin
+R_ARADDR_i[m_ar_i] <= ARADDR[m_ar_i];
+// Save the master ID that this request came from
+R_ARID[m_ar_i][(N_MASTERID_BITS+AXI4_ID_WIDTH)-1:AXI4_ID_WIDTH] <= m_ar_i;
+R_ARID[m_ar_i][AXI4_ID_WIDTH-1:0] <= ARID[m_ar_i];
+R_ARLEN[m_ar_i] <= ARLEN[m_ar_i];
+R_ARSIZE[m_ar_i] <= ARSIZE[m_ar_i];
+R_ARBURST[m_ar_i] <= ARBURST[m_ar_i];
+R_ARLOCK[m_ar_i] <= ARLOCK[m_ar_i];
+R_ARCACHE[m_ar_i] <= ARCACHE[m_ar_i];
+R_ARPROT[m_ar_i] <= ARPROT[m_ar_i];
+R_ARQOS[m_ar_i] <= ARQOS[m_ar_i];
+R_ARREGION[m_ar_i] <= ARREGION[m_ar_i];
+read_req_state[m_ar_i] <= 'b01;
+end
+end
+                
+// Decode state
+'b01: begin
+read_selected_slave[m_ar_i] <= ${name}_addr2initiator(m_ar_i, R_ARADDR_i[m_ar_i], R_ARADDR[m_ar_i]);
+// Initiate the transfer when the
+R_ARVALID[m_ar_i] <= 1;
+read_req_state[m_ar_i] <= 'b10;
+end
+
+// Wait for the targeted slave to become available
+'b10: begin
+if (ar_master_gnt[read_selected_slave[m_ar_i]] &&
+ar_master_gnt_id[read_selected_slave[m_ar_i]] == m_ar_i &&
+SARREADY[read_selected_slave[m_ar_i]]) begin
+// Wait until the slave is granted and accepts the request
+// After that we're done
+R_ARVALID[m_ar_i] <= 0;
+read_selected_slave[m_ar_i] <= NO_SLAVE;
+read_req_state[m_ar_i] <= 0;
+end
+end
+endcase
+end
+end
+end
+endgenerate
+        
+        
+// Build the ar_req vector for each slave
+generate
+genvar ar_req_i, ar_req_j;
+
+for (ar_req_i=0; ar_req_i < ${n-initiators}+1; ar_req_i++) begin : ar_req_slave
+for (ar_req_j=0; ar_req_j < ${n-targets}; ar_req_j++) begin : ar_req_master
+assign ar_req[ar_req_i][ar_req_j] = (read_selected_slave[ar_req_j] == ar_req_i);
+end
+end
+endgenerate
+
+generate
+genvar ar_arb_i;
+        
+for (ar_arb_i=0; ar_arb_i<(${n-initiators}+1); ar_arb_i++) begin : ar_arb
+arbiter #(.N_REQ(${n-targets})) ar_arb (
+.clk    (clk   ), 
+.rstn   (rstn  ), 
+.req    (ar_req[ar_arb_i]), 
+.gnt    (ar_master_gnt[ar_arb_i]),
+.gnt_id    (ar_master_gnt_id[ar_arb_i])
+);
+end
+endgenerate        
+
+wire[N_MASTERID_BITS:0]                    slave_active_read_master[${n-initiators}:0];
+
+generate
+genvar s_ar_m_i;
+        
+for (s_ar_m_i=0; s_ar_m_i<${n-initiators}+1; s_ar_m_i++) begin : s_ar_m
+assign slave_active_read_master[s_ar_m_i] =
+(ar_master_gnt[s_ar_m_i])?ar_master_gnt_id[s_ar_m_i]:NO_MASTER;
+end
+endgenerate
+
+generate
+genvar s_ar_i;
+    
+for(s_ar_i=0; s_ar_i<(${n-initiators}+1); s_ar_i++) begin : SAR_assign
+assign SARADDR[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARADDR[slave_active_read_master[s_ar_i]];
+assign SARID[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARID[slave_active_read_master[s_ar_i]];
+assign SARLEN[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARLEN[slave_active_read_master[s_ar_i]];
+assign SARSIZE[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARSIZE[slave_active_read_master[s_ar_i]];
+assign SARBURST[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARBURST[slave_active_read_master[s_ar_i]];
+assign SARLOCK[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARLOCK[slave_active_read_master[s_ar_i]];
+assign SARCACHE[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARCACHE[slave_active_read_master[s_ar_i]];
+assign SARPROT[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARPROT[slave_active_read_master[s_ar_i]];
+assign SARQOS[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARQOS[slave_active_read_master[s_ar_i]];
+assign SARREGION[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARREGION[slave_active_read_master[s_ar_i]];
+assign SARVALID[s_ar_i] = (slave_active_read_master[s_ar_i] == NO_MASTER)?0:R_ARVALID[slave_active_read_master[s_ar_i]];
+end
+endgenerate
+
+// Read response channel
+reg [N_MASTERID_BITS:0]        read_response_selected_master[${n-initiators}:0];
+wire [${n-initiators}:0]            r_req[${n-targets}-1:0];
+wire                        r_gnt[${n-targets}-1:0];
+wire [N_SLAVEID_BITS-1:0]    r_gnt_id[${n-targets}-1:0];
+    
+    
+    
+    
+generate
+genvar r_arb_i;
+        
+for (r_arb_i=0; r_arb_i<${n-targets}; r_arb_i++) begin : r_arb
+arbiter #(.N_REQ  (${n-initiators}+1)) r_arb (
+.clk    (clk   ), 
+.rstn   (rstn  ), 
+.req    (r_req[r_arb_i]), 
+.gnt    (r_gnt[r_arb_i]),
+.gnt_id    (r_gnt_id[r_arb_i])
+);
+end
+endgenerate
+        
+generate
+genvar r_req_slave_i, r_req_master_i;
+
+for (r_req_slave_i=0; r_req_slave_i<${n-initiators}+1; r_req_slave_i++) begin : r_req_slave
+for (r_req_master_i=0; r_req_master_i<${n-targets}; r_req_master_i++) begin : r_req_master
+assign r_req[r_req_master_i][r_req_slave_i] = (read_response_selected_master[r_req_slave_i] == r_req_master_i);
+end
+end
+endgenerate
+        
+// Read response state machine
+reg[1:0]                read_response_state[${n-initiators}:0];
+    
+generate
+genvar r_state_i;
+        
+for (r_state_i=0; r_state_i<${n-initiators}+1; r_state_i++) begin : r_state
+always @(posedge clk) begin
+if (rstn == 0) begin
+read_response_state[r_state_i] <= 0;
+read_response_selected_master[r_state_i] <= NO_MASTER;
+SRID_r[r_state_i] <= 0;
+SRDATA_r[r_state_i] <= 0;
+SRRESP_r[r_state_i] <= 0;
+SRLAST_r[r_state_i] <= 0;
+end else begin
+case (read_response_state[r_state_i])
+0: begin
+if (SRVALID[r_state_i]) begin
+// Issue request for targeted master
+read_response_selected_master[r_state_i] <= SRID[r_state_i][(AXI4_ID_WIDTH+N_MASTERID_BITS-1):AXI4_ID_WIDTH];
+read_response_state[r_state_i] <= 1;
+                                
+// Capture initial request
+SRID_r[r_state_i] <= SRID[r_state_i];
+SRDATA_r[r_state_i] <= SRDATA[r_state_i];
+SRRESP_r[r_state_i] <= SRRESP[r_state_i];
+SRLAST_r[r_state_i] <= SRLAST[r_state_i];
+end
+end
+                        
+1: begin
+if (r_gnt[read_response_selected_master[r_state_i]] &&
+r_gnt_id[read_response_selected_master[r_state_i]] == r_state_i) begin
+// Slave now connected to selected master
+read_response_state[r_state_i] <= 2;
+end
+end
+                    
+// State in which the registered initial request is passed to the master
+2: begin
+if (RREADY[read_response_selected_master[r_state_i]]) begin
+if (SRLAST_p[r_state_i]) begin
+read_response_selected_master[r_state_i] <= NO_MASTER;
+read_response_state[r_state_i] <= 0;
+end else begin
+read_response_state[r_state_i] <= 3;
+end
+end 
+end
+                    
+// State in which we are connected directly to the selected master
+3: begin
+if (SRREADY[r_state_i] && SRVALID[r_state_i] && SRLAST[r_state_i]) begin
+// Done
+read_response_selected_master[r_state_i] <= NO_MASTER;
+read_response_state[r_state_i] <= 0;
+end
+end
+endcase
+end
+end
+end
+endgenerate
+        
+generate
+genvar r_assign_i;
+    
+for (r_assign_i=0; r_assign_i<${n-initiators}+1; r_assign_i++) begin : r_assign
+assign SRID_p[r_assign_i] = (read_response_state[r_assign_i] == 3)?SRID[r_assign_i]:(read_response_state[r_assign_i] == 2)?SRID_r[r_assign_i]:0;
+assign SRDATA_p[r_assign_i] = (read_response_state[r_assign_i] == 3)?SRDATA[r_assign_i]:(read_response_state[r_assign_i] == 2)?SRDATA_r[r_assign_i]:0;
+assign SRRESP_p[r_assign_i] = (read_response_state[r_assign_i] == 3)?SRRESP[r_assign_i]:(read_response_state[r_assign_i] == 2)?SRRESP_r[r_assign_i]:0;
+assign SRLAST_p[r_assign_i] = (read_response_state[r_assign_i] == 3)?SRLAST[r_assign_i]:(read_response_state[r_assign_i] == 2)?SRLAST_r[r_assign_i]:0;
+assign SRVALID_p[r_assign_i] = (read_response_state[r_assign_i] == 3)?SRVALID[r_assign_i]:(read_response_state[r_assign_i] == 2)?1:0;
+assign SRREADY[r_assign_i] = (read_response_state[r_assign_i] == 3)?RREADY[read_response_selected_master[r_assign_i]]:(read_response_state[r_assign_i] == 0);
+end
+endgenerate
+        
+wire[N_SLAVEID_BITS:0]                        r_slave_master_id[${n-targets}-1:0];
+
+// Determine which slave should be driven the write response channel for each master
+// based on the slave->master grant
+generate
+genvar r_slave_master_i;
+        
+for (r_slave_master_i=0; r_slave_master_i<${n-targets}; r_slave_master_i++) begin : r_slave_master
+assign r_slave_master_id[r_slave_master_i] = 
+(r_gnt[r_slave_master_i])?r_gnt_id[r_slave_master_i]:NO_SLAVE;
+end
+endgenerate
+        
+generate
+genvar r_master_assign_i;
+    
+for (r_master_assign_i=0; r_master_assign_i<${n-targets}; r_master_assign_i++) begin : r_master_assign
+assign RID[r_master_assign_i] = (r_slave_master_id[r_master_assign_i] == NO_SLAVE)?0:SRID_p[r_slave_master_id[r_master_assign_i]];
+assign RVALID[r_master_assign_i] = (r_slave_master_id[r_master_assign_i] == NO_SLAVE)?0:SRVALID_p[r_slave_master_id[r_master_assign_i]];
+assign RRESP[r_master_assign_i] = (r_slave_master_id[r_master_assign_i] == NO_SLAVE)?0:SRRESP_p[r_slave_master_id[r_master_assign_i]];
+assign RLAST[r_master_assign_i] = (r_slave_master_id[r_master_assign_i] == NO_SLAVE)?0:SRLAST_p[r_slave_master_id[r_master_assign_i]];
+assign RDATA[r_master_assign_i] = (r_slave_master_id[r_master_assign_i] == NO_SLAVE)?0:SRDATA_p[r_slave_master_id[r_master_assign_i]];
+end
+endgenerate
+
+endmodule
